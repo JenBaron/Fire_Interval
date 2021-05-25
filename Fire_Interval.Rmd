@@ -1,0 +1,229 @@
+---
+title: "Fire Intervals"
+author: "Jen Baron, j.baron@alumni.ubc.ca, UBC Tree Ring Lab"
+date: 'May 25, 2021'
+output:
+  html_document:
+    keep_md: yes
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+---
+
+
+# Load Packages
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(strucchange)
+source("opt_breakpoints.R")
+```
+
+
+# Load Data
+
+```{r}
+fire <- read.csv("data/fire_curve.csv")
+fire_years <- read.csv("data/fire_years.csv")
+str(fire_years)
+str(fire)
+plot(fire)
+```
+
+Need to convert to time series before analysis
+
+```{r}
+fire_ts <- ts(fire$fire, start=c(1600), end=c(2015), frequency=1)
+
+plot(fire_ts)
+```
+```{r}
+hist(fire$fire, breaks=40)
+
+ggplot(fire, aes(fire)) +
+  geom_density(fill = "lightgray") +
+  theme_classic()
+
+ ggplot(fire, aes(x=year, y=fire)) +
+  geom_point(size=0.7, alpha=0.3) +
+   geom_smooth(method="loess", col="black") +
+  ylab("Number of Fires") +
+  theme_classic() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA))
+```
+
+# Changepoint Detection
+
+```{r}
+set.seed(1210)
+```
+
+
+
+**Generalized fluctuation test & F test**
+
+```{r}
+ocus_f <- efp(fire_ts ~ 1, type = "OLS-CUSUM")
+plot(ocus_f)
+sctest(ocus_f)
+f.p <- sctest(ocus_f)$p.value
+
+fs_f <- Fstats(fire_ts ~ 1)
+plot(fs_f)
+```
+
+**Regression breakpoints**
+
+```{r}
+bp_f <- breakpoints(fire ~ year, data = fire)
+plot(bp_f)
+```
+```{r}
+bpts_sum <- summary(bp_f)
+opt_brks <- opt_breakpoints(bpts_sum$RSS["BIC",])
+opt_brks <- 2
+```
+
+```{r}
+bp.1 <- breakpoints(bp_f, breaks = opt_brks)
+breaks.1 <- bp.1$breakpoints
+
+## confidence intervals
+ci.1 <- confint(bp_f, breaks= opt_brks)
+ci.1$confint
+
+fire[bp.1$breakpoints,] #get the Year from row number
+```
+
+```{r}
+plot(fire ~ year, data = fire, type = "l")
+for (i in 1: opt_brks) {
+  abline(v = fire$year[ci.1$confint[i,2]], col = "red")
+  abline(v = fire$year[ci.1$confint[i,1]], col = "black", lty = 3)
+  abline(v = fire$year[ci.1$confint[i,3]], col = "black", lty = 3)
+}
+```
+
+
+```{r}
+est.1 <- fire[ci.1$confint[,2],] #get the Year from row number
+low.1 <- fire[ci.1$confint[,1],] #lower CI
+up.1 <- fire[ci.1$confint[,3],] #upper CI
+
+est.1 <- est.1 %>% 
+  select(year) %>%
+  rename(year, "estimate" = "year")
+low.1 <- low.1 %>% 
+  select(year) %>%
+  rename(year, "lower" = "year")
+up.1 <- up.1 %>%
+  select(year) %>%
+  rename(year, "upper" = "year")
+est.f <- cbind(est.1, low.1, up.1)
+```
+
+```{r}
+bf.1 <- breakfactor(bp.1)
+#bf.1<- relevel(bf.1, ref=4)
+
+fm0.f <- lm(data=fire, fire ~ year) #null hypothesis
+fm1.f <- lm(data=fire, fire~year*bf.1) #alternative hypothesis
+coef(fm1.f)
+
+summary(fm1.f)
+```
+
+```{r}
+fm1.f$coefficients
+#intercepts
+b1 <- fm1.f[["coefficients"]][["(Intercept)"]]
+b2 <- fm1.f[["coefficients"]][["(Intercept)"]]+fm1.f[["coefficients"]][["bf.1segment2"]]
+b3 <- fm1.f[["coefficients"]][["(Intercept)"]]+fm1.f[["coefficients"]][["bf.1segment3"]]
+# b4 <- fm1.f[["coefficients"]][["(Intercept)"]]+fm1.f[["coefficients"]][["bf.1segment4"]]
+# b5 <- fm1.f[["coefficients"]][["(Intercept)"]]+fm1.f[["coefficients"]][["bf.1segment5"]]
+#slopes
+m1 <- fm1.f[["coefficients"]][["year"]]
+m2 <- fm1.f[["coefficients"]][["year"]]+fm1.f[["coefficients"]][["year:bf.1segment2"]]
+m3 <- fm1.f[["coefficients"]][["year"]]+fm1.f[["coefficients"]][["year:bf.1segment3"]]
+# m4 <- fm1.f[["coefficients"]][["year"]]+fm1.f[["coefficients"]][["year:bf.1segment4"]]
+# m5 <- fm1.f[["coefficients"]][["year"]]+fm1.f[["coefficients"]][["year:bf.1segment5"]]
+
+f.coef <- data.frame(metric = "nf", segment = c(1:3), slope = c(m1,m2,m3), intercept = c(b1,b2,b3)) 
+f.coef
+```
+
+```{r}
+fit.a <- fitted(fm1.f)
+mod.a <- data.frame(year = fire$year, fire = fit.a)
+
+# plot the fitted model
+fig.1 <- ggplot() +
+  #geom_line(data=fire, aes(x = year, y = fire), colour = "darkgrey", size=0.75) +
+  geom_point(data=fire, aes(x=year, y=fire), size=0.6, alpha=0.3) +
+  geom_vline(xintercept = est.f$estimate, size=0.6, col = "black", linetype="dashed") +
+  #geom_vline(data=fire_years, aes(xintercept = fire_year)) +
+  #geom_vline(xintercept = (est.f$lower), linetype = "dashed", size=0.3, alpha=0.7) +
+  #geom_vline(xintercept = (est.f$upper), linetype = "dashed", size=0.3, alpha=0.7) +
+  geom_line(data=mod.a, aes(x = year, y = fire), alpha=1, col="black", size=0.6) + 
+  #geom_abline(slope=m1, intercept=b1, col = "blue") +
+  #geom_abline(slope=m2, intercept=b2, col = "blue") +
+  #geom_abline(slope=m3, intercept=b3, col = "blue") +
+  scale_x_continuous(limits=c(1600,2015), name = "") +
+  ylab("Cumulative Number of Fires") +  
+  theme_classic() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        axis.title.x = element_blank())
+
+fig.1
+
+ggsave("figures/fig_1.png", fig.1, dpi=300, width=6, height=4)
+```
+```{r}
+est.f
+```
+
+# Assumptions
+
+```{r}
+plot(fm1.f, which=2) #normality
+plot(fm1.f, which=3) #equal variance
+plot(fm1.f, which=1) #linearity
+plot(fm1.f, which=4) #Cook's distance
+```
+These look good
+
+```{r}
+plot(residuals(fm1.f), type="b")
+abline(h=0,lty=3)
+# ACF function on residuals
+acf(resid(fm1.f), main="acf(resid(fm1.f))", plot=T)
+acf(resid(fm1.f), main="acf(resid(fm1.f))", plot=F)
+
+acf((fire_ts), main="fire_ts", plot=T)
+acf((fire_ts), main="fire_ts", plot=F)
+```
+
+Temporal autocorrelation is high in the residuals - increases mean absolute error and probability of a type I error (false positive).
+
+# Save Outputs
+
+```{r}
+write.csv(mod.a, "outputs/model_fitted.csv")
+write.csv(est.f, "outputs/estimates.csv")
+write.csv(f.coef, "outputs/coef.csv")
+```
+
+# Reproducibility
+
+```{r}
+Sys.time()
+git2r::repository()
+sessionInfo()
+```
